@@ -433,7 +433,6 @@ class EpubDocumentParser:
 # Conversion seam
 # ---------------------------------------------------------------------------
 # Isolated in a module-level function so tests can patch exactly one symbol.
-# The conversion is isolated the same way upstream converters do it.
 
 
 def _extract_epub(path: Path) -> tuple[str, str | None]:

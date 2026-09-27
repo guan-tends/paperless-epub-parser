@@ -5,3 +5,6 @@ __pycache__/
 build/
 dist/
 .pytest_cache/
+
+# Serena workspace config -- editor/tooling state, not part of the package
+.serena/
