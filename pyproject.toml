@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "paperless-epub-parser"
-version = "1.1.0"
+dynamic = ["version"]
 description = "EPUB parser plugin for Paperless-ngx — text extraction for full-text search."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -51,6 +51,12 @@ Issues = "https://github.com/guan-tends/paperless-epub-parser/issues"
 # used only in log output; the value is the ``module:ClassName`` import path.
 [project.entry-points."paperless_ngx.parsers"]
 epub = "paperless_epub_parser:EpubDocumentParser"
+
+[tool.hatch.version]
+# Single source of truth: the package declares __version__; the build
+# reads it. Declaring the version twice let them drift -- the deployed
+# parser reported v1.0.0 while the package metadata said 1.1.0.
+path = "src/paperless_epub_parser/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/paperless_epub_parser"]

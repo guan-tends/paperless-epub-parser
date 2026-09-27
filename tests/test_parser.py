@@ -219,14 +219,104 @@ class TestZipAlias:
         """
         assert EpubDocumentParser.score("application/zip", "x.zip") is None
 
-    def test_validation_is_regex_free(self, tmp_path):
-        """The detection path opens the archive; it must not raise on odd bytes."""
-        archive = tmp_path / "empty.zip"
+    def test_empty_zip_is_declined(self, tmp_path):
+        """An archive with no entries must decline, not raise."""
         import zipfile
 
+        archive = tmp_path / "empty.zip"
         with zipfile.ZipFile(archive, "w"):
             pass
         assert EpubDocumentParser.score("application/zip", "empty.zip", archive) is None
+
+    def test_office_documents_are_declined(self, tmp_path):
+        """The gate must not steal files that merely *are* ZIP containers.
+
+        Declaring ``application/zip`` means this parser is now offered every
+        archive libmagic identifies as a ZIP: docx, odt, xlsx, jar, apk, and
+        plain zip.  Each is a valid archive; none is an EPUB.  A gate that
+        accepted any of them would be the same silent-failure class as the
+        bug it was written to fix.
+        """
+        import zipfile
+
+        for filename, entries in (
+            ("report.docx", {"[Content_Types].xml", "word/document.xml"}),
+            ("sheet.xlsx", {"[Content_Types].xml", "xl/workbook.xml"}),
+            ("doc.odt", {"mimetype", "content.xml", "meta.xml"}),
+            ("app.jar", {"META-INF/MANIFEST.MF", "com/example/Main.class"}),
+        ):
+            archive = tmp_path / filename
+            with zipfile.ZipFile(archive, "w") as z:
+                for entry in entries:
+                    z.writestr(entry, "x")
+            assert (
+                EpubDocumentParser.score("application/zip", filename, archive) is None
+            ), f"{filename} must not be claimed as an EPUB"
+
+    def test_odt_mimetype_value_is_rejected(self, tmp_path):
+        """An ODT stores ``mimetype`` too -- with a different value.
+
+        This is the sharpest near-miss: the entry name is identical, the
+        structure is similar, and only the declared value distinguishes them.
+        """
+        import zipfile
+
+        archive = tmp_path / "doc.odt"
+        with zipfile.ZipFile(archive, "w") as z:
+            z.writestr("mimetype", "application/vnd.oasis.opendocument.text")
+            z.writestr("META-INF/container.xml", "<container/>")
+        assert EpubDocumentParser.score("application/zip", "doc.odt", archive) is None
+
+    def test_container_xml_in_unrelated_zip_is_declined(self, tmp_path):
+        """A stray ``META-INF/container.xml`` alone must not qualify a file."""
+        import zipfile
+
+        archive = tmp_path / "bundle.zip"
+        with zipfile.ZipFile(archive, "w") as z:
+            z.writestr("META-INF/container.xml", "<container/>")
+            z.writestr("readme.txt", "hello")
+        assert EpubDocumentParser.score("application/zip", "bundle.zip", archive) is None
+
+    def test_nested_container_path_is_not_a_match(self, tmp_path):
+        """Only the root ``META-INF/container.xml`` is meaningful.
+
+        A file buried in a subdirectory must not satisfy the check -- matching
+        on a suffix rather than the exact path would accept archives that
+        merely happen to contain a similarly named file.
+        """
+        import zipfile
+
+        archive = tmp_path / "nested.zip"
+        with zipfile.ZipFile(archive, "w") as z:
+            z.writestr("mimetype", "application/epub+zip")
+            z.writestr("backup/META-INF/container.xml", "<container/>")
+        assert EpubDocumentParser.score("application/zip", "nested.zip", archive) is None
+
+    def test_directory_named_container_xml_is_declined(self, tmp_path):
+        """A *directory* entry must not be read as the file itself."""
+        import zipfile
+
+        archive = tmp_path / "dirlike.zip"
+        with zipfile.ZipFile(archive, "w") as z:
+            z.writestr("mimetype", "application/epub+zip")
+            z.writestr("META-INF/container.xml/", "")
+        assert EpubDocumentParser.score("application/zip", "dirlike.zip", archive) is None
+
+    def test_epub_mime_ignores_content_entirely(self, tmp_path):
+        """A declared EPUB type is trusted without opening the file.
+
+        Detection already said EPUB; there is nothing to second-guess, and
+        doing archive I/O on the common path would be pure cost.
+        """
+        bogus = tmp_path / "not-really.epub"
+        bogus.write_bytes(b"this is not a zip at all")
+        assert EpubDocumentParser.score(EPUB_MIME, "not-really.epub", bogus) == 10
+
+    def test_score_is_deterministic(self, tmp_path):
+        """Repeated calls must agree -- no state leaking between invocations."""
+        book = _write_minimal_epub(tmp_path / "book.epub")
+        results = {EpubDocumentParser.score("application/zip", "book.epub", book) for _ in range(5)}
+        assert results == {1}
 
 
 class TestIdentityAttributes:

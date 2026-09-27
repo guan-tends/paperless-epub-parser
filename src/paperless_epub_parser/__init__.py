@@ -52,7 +52,10 @@ if TYPE_CHECKING:
 
 __all__ = ["EpubDocumentParser", "ParseError"]
 
-__version__ = "1.0.0"
+# Single source of truth for the version. ``pyproject.toml`` declares
+# ``dynamic = ["version"]`` and reads this value at build time, so the package
+# metadata and the value Paperless logs at startup can never disagree.
+__version__ = "1.1.0"
 
 
 class ParseError(Exception):
