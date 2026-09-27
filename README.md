@@ -89,6 +89,29 @@ filename and extracted text and does better than a blind metadata grab.
 **Fully local.** The parser declares `uses_remote_service = False` and never
 contacts anything off-box.
 
+## Known upstream defect, and the correction
+
+`markitdown`'s `EpubConverter` locates the spine with
+`getElementsByTagName("itemref")` and the manifest with
+`getElementsByTagName("item")`. Both match on the **qualified** name, so on an
+OPF written with namespace prefixes — `<opf:itemref>`, `<opf:item>` — those
+lookups return **zero** elements. The converter then finds no spine, emits only
+the metadata block, and returns a few hundred characters for a book of several
+hundred thousand. **Nothing raises.**
+
+That syntax is legal EPUB 2 and is emitted by several publisher toolchains. In a
+795-book library it affected exactly one book — which is precisely why it was
+worth fixing: a hole that size is invisible when you read the output.
+
+This plugin detects that specific condition before delegating, and takes a local
+spine-walking path instead (`_epub.py`). Detection is the precise condition, not
+a heuristic on output length, so books `markitdown` handles correctly are never
+rerouted. Only the spine walk is replaced — each document is still converted by
+`markitdown`'s own `HtmlConverter`, so HTML-to-Markdown behaviour is unchanged.
+
+Measured on the affected book: **203 → 157,367 characters**, with all other
+books byte-identical.
+
 ## Failure behaviour
 
 - **Malformed / unreadable file** → `ParseError` naming the file, so Paperless
