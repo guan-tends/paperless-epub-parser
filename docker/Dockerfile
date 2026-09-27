@@ -11,12 +11,17 @@
 
 FROM ghcr.io/paperless-ngx/paperless-ngx:3.1.3
 
-# Installing the plugin needs root.  We deliberately do NOT set `USER` back to
-# a specific account afterwards: the base image leaves USER unset so that its
-# s6-overlay entrypoint (/init) starts as root and then drops privileges to the
-# paperless user itself, honouring USERMAP_UID/USERMAP_GID from the env file.
-# Setting `USER paperless` here breaks that handoff and the container
-# crash-loops.  Match the base image's convention: leave USER unset.
+# Installing the plugin needs root, and we stay root deliberately.
+#
+# The base image leaves `USER` unset, so its s6-overlay entrypoint (/init)
+# starts as root and then drops privileges to the paperless account itself,
+# honouring USERMAP_UID/USERMAP_GID.  We must let that handoff happen.
+#
+# `USER root` here is equivalent to leaving it unset (both mean uid 0) and is
+# stated explicitly so the intent is visible.  The line that breaks this image
+# is a NON-root switch -- e.g. a trailing `USER paperless`.  That pre-empts the
+# handoff, and the container then exits cleanly (status 0), prints no error,
+# and crash-loops with a rising restart count.
 USER root
 
 # Copy only the package metadata and source -- the build context excludes
