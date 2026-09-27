@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "paperless-epub-parser"
-version = "1.0.0"
+version = "1.1.0"
 description = "EPUB parser plugin for Paperless-ngx — text extraction for full-text search."
 readme = "README.md"
 requires-python = ">=3.11"

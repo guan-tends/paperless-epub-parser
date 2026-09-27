@@ -17,6 +17,7 @@ import pytest
 
 from paperless_epub_parser import EpubDocumentParser
 from paperless_epub_parser import ParseError
+from paperless_epub_parser import _EPUB_MIME_TYPES
 
 EPUB_MIME = "application/epub+zip"
 SAMPLE_TEXT = "# Chapter One\n\n" + ("Lorem ipsum dolor sit amet. " * 200)
@@ -27,6 +28,40 @@ def parser():
     """A configured parser with its scratch directory cleaned up after the test."""
     with EpubDocumentParser() as p:
         yield p
+
+
+def _write_minimal_epub(path, *, mimetype_first: bool = True):
+    """Write a structurally valid EPUB and return its path.
+
+    When ``mimetype_first`` is False the archive is written in the shape that
+    defeats libmagic: a directory entry first, ``mimetype`` third.  That is a
+    real, readable, non-conformant EPUB -- the ``Complete Ninja Collection``
+    shape -- and the whole reason the ZIP alias exists.
+    """
+    import zipfile
+
+    container = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<container version="1.0" '
+        'xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+        '<rootfiles><rootfile full-path="content.opf" '
+        'media-type="application/oebps-package+xml"/></rootfiles></container>'
+    )
+    opf = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<package version="2.0" xmlns="http://www.idpf.org/2007/opf">'
+        "<metadata/><manifest/><spine/></package>"
+    )
+    with zipfile.ZipFile(path, "w") as z:
+        if mimetype_first:
+            z.writestr("mimetype", "application/epub+zip")
+        else:
+            z.writestr("META-INF/", "")
+        z.writestr("META-INF/container.xml", container)
+        if not mimetype_first:
+            z.writestr("mimetype", "application/epub+zip")
+        z.writestr("content.opf", opf)
+    return path
 
 
 @pytest.fixture()
@@ -65,8 +100,15 @@ class TestRegistryContract:
         first["application/nonsense"] = ".nope"
         assert "application/nonsense" not in EpubDocumentParser.supported_mime_types()
 
-    def test_all_declared_mime_types_score(self):
-        for mime in EpubDocumentParser.supported_mime_types():
+    def test_declared_epub_mime_types_score_full_priority(self):
+        """Every EPUB-identifying type scores the conventional 10.
+
+        ``application/zip`` is declared too (see the class docstring on
+        :meth:`score`) but is *not* an EPUB-identifying type -- it is scored
+        separately by :class:`TestZipAlias`, which is why this iterates the
+        explicit set rather than ``supported_mime_types()``.
+        """
+        for mime in _EPUB_MIME_TYPES:
             assert EpubDocumentParser.score(mime, "book.epub") == 10
 
     def test_score_declines_unrelated_mime_types(self):
@@ -78,6 +120,113 @@ class TestRegistryContract:
     def test_score_accepts_optional_path_argument(self):
         """Paperless always passes ``path=``; the signature must tolerate it."""
         assert EpubDocumentParser.score(EPUB_MIME, "book.epub", Path("/tmp/book.epub")) == 10
+
+
+class TestZipAlias:
+    """Non-conformant EPUBs detected as ``application/zip``.
+
+    libmagic classifies a ZIP archive from its leading bytes alone, and an
+    EPUB is a ZIP.  The OCF specification requires the ``mimetype`` entry to be
+    the *first* record in the archive, uncompressed; when a producer puts it
+    anywhere else, detection reports ``application/zip`` and Paperless rejects
+    the file with "Unsupported mime type" *before any parser is consulted*.
+
+    Real instance: ``Complete Ninja Collection`` (Stephen K. Hayes, Black Belt
+    Books) -- 37 MB, 277 spine documents, 726,590 characters of perfectly
+    extractable text, rejected outright.  See ``test_declared_zip_is_gated_on
+    _structure`` and the ``_looks_like_epub`` helper.
+    """
+
+    def test_zip_mime_is_declared(self):
+        """Claiming the type is *load-bearing*, not cosmetic.
+
+        ``ParserRegistry.get_parser_for_file`` skips any parser whose
+        ``supported_mime_types`` omits the detected type -- ``score`` is never
+        reached.  A parser cannot inspect a file it is not first offered.
+        """
+        assert "application/zip" in EpubDocumentParser.supported_mime_types()
+
+    def test_zip_score_is_low_but_nonzero(self, tmp_path):
+        """Above zero to be selectable, far below 10 to stay humble.
+
+        A ZIP-shaped EPUB must never out-rank a parser that genuinely handles
+        whatever the file turns out to be.
+        """
+        book = _write_minimal_epub(tmp_path / "book.epub")
+        score = EpubDocumentParser.score("application/zip", "book.epub", book)
+        assert score is not None
+        assert 0 < score < 10
+
+    def test_missing_path_is_declined(self):
+        """A path that does not exist cannot be inspected, so decline."""
+        assert EpubDocumentParser.score("application/zip", "x.zip", Path("/tmp/does-not-exist.zip")) is None
+
+    def test_real_epub_disguised_as_zip_is_claimed(self, tmp_path):
+        """A genuine EPUB detected as a ZIP is accepted."""
+        book = _write_minimal_epub(tmp_path / "misdetected.epub")
+        assert EpubDocumentParser.score("application/zip", "book.epub", book) == 1
+
+    def test_mimetype_not_first_still_claimed(self, tmp_path):
+        """The precise real-world shape, reproduced.
+
+        An archive whose *first* entry is a directory and whose ``mimetype``
+        sits third -- still a readable EPUB, still reported as
+        ``application/zip`` by libmagic.
+        """
+        book = _write_minimal_epub(tmp_path / "ninja.epub", mimetype_first=False)
+        assert EpubDocumentParser.score("application/zip", "ninja.epub", book) == 1
+
+    def test_ordinary_zip_is_declined(self, tmp_path):
+        """A ZIP that is not an EPUB must be declined, not misread as a book."""
+        import zipfile
+
+        archive = tmp_path / "holiday-photos.zip"
+        with zipfile.ZipFile(archive, "w") as z:
+            z.writestr("photos/beach.jpg", b"\xff\xd8\xff")
+        assert EpubDocumentParser.score("application/zip", "holiday-photos.zip", archive) is None
+
+    def test_zip_without_mimetype_is_declined(self, tmp_path):
+        """``container.xml`` alone is not enough -- both markers are required."""
+        import zipfile
+
+        archive = tmp_path / "not-a-book.zip"
+        with zipfile.ZipFile(archive, "w") as z:
+            z.writestr("META-INF/container.xml", "<container/>")
+            z.writestr("content.opf", "<package/>")
+        assert EpubDocumentParser.score("application/zip", "not-a-book.zip", archive) is None
+
+    def test_zip_with_wrong_mimetype_string_is_declined(self, tmp_path):
+        """A ``mimetype`` entry claiming something else is not an EPUB."""
+        import zipfile
+
+        archive = tmp_path / "wrong.zip"
+        with zipfile.ZipFile(archive, "w") as z:
+            z.writestr("mimetype", "application/pdf")
+            z.writestr("META-INF/container.xml", "<container/>")
+        assert EpubDocumentParser.score("application/zip", "wrong.zip", archive) is None
+
+    def test_unopenable_zip_is_declined_not_raised(self, tmp_path):
+        """A corrupt archive must decline quietly; Paperless reports it."""
+        corrupt = tmp_path / "corrupt.zip"
+        corrupt.write_bytes(b"PK\x03\x04 not really a zip")
+        assert EpubDocumentParser.score("application/zip", "corrupt.zip", corrupt) is None
+
+    def test_no_path_means_no_zip_claim(self):
+        """Without a path there is nothing to inspect, so decline.
+
+        ``path`` is optional in the protocol; guessing here would risk stealing
+        a ZIP file from a parser that genuinely understands it.
+        """
+        assert EpubDocumentParser.score("application/zip", "x.zip") is None
+
+    def test_validation_is_regex_free(self, tmp_path):
+        """The detection path opens the archive; it must not raise on odd bytes."""
+        archive = tmp_path / "empty.zip"
+        import zipfile
+
+        with zipfile.ZipFile(archive, "w"):
+            pass
+        assert EpubDocumentParser.score("application/zip", "empty.zip", archive) is None
 
 
 class TestIdentityAttributes:

@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import ClassVar
@@ -75,13 +76,64 @@ _SUPPORTED_MIME_TYPES: dict[str, str] = {
     "application/epub+zip": ".epub",
     "application/epub": ".epub",
     "application/x-epub+zip": ".epub",
+    # ``application/zip`` is claimed deliberately -- see :meth:`score`.
+    "application/zip": ".epub",
 }
+
+# MIME types that identify an EPUB outright, with no further inspection needed.
+_EPUB_MIME_TYPES = frozenset(
+    {"application/epub+zip", "application/epub", "application/x-epub+zip"},
+)
+
+# MIME types that *may* be an EPUB but need the archive inspected to confirm.
+_ZIP_MIME_TYPES = frozenset({"application/zip"})
 
 # Score 10 matches the built-in parsers.  Nothing else in Paperless-ngx claims
 # EPUB, so there is no contention to win -- but keeping the conventional value
 # means a future built-in EPUB parser can be overridden deliberately rather
 # than accidentally.
 _SCORE = 10
+
+# Just above zero.  When a file's *content* looks like a plain ZIP we still
+# accept it, but only after inspecting it: an unrecognised archive must not
+# out-rank a genuine parser for whatever the file actually is.
+_ZIP_ALIAS_SCORE = 1
+
+
+def _looks_like_epub(path: Path) -> bool:
+    """Decide whether a ZIP archive is really an EPUB.
+
+    Two independent structural signals are required, matching what the OCF
+    container specification defines.  Either alone produces false positives:
+    ``mimetype`` appears in unrelated archives, and ``container.xml`` can be
+    present in a malformed file.  Both together are a reliable EPUB marker.
+
+    This deliberately does *not* trust the ``mimetype`` entry's *position* in
+    the archive.  Its position is the very thing that varies -- a file with
+    ``mimetype`` present but not first is a common, readable, non-conformant
+    EPUB, and accepting it here is the entire purpose of this function.
+
+    Parameters
+    ----------
+    path:
+        Filesystem path to the candidate archive.
+
+    Returns
+    -------
+    bool
+        ``True`` when the archive carries both EPUB structural markers.
+    """
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+            if "META-INF/container.xml" not in names or "mimetype" not in names:
+                return False
+            declared = archive.read("mimetype").strip()
+    except (OSError, zipfile.BadZipFile, KeyError):
+        # A file libmagic called a ZIP but that we cannot open is not our
+        # problem to solve -- decline and let Paperless report it normally.
+        return False
+    return declared == b"application/epub+zip"
 
 # Thumbnail geometry required by Paperless-ngx (~500x700 WebP).
 _THUMB_SIZE = (500, 700)
@@ -171,8 +223,28 @@ class EpubDocumentParser:
         on every candidate parser and keeps the highest score, breaking ties
         in favour of third-party parsers over built-ins.
         """
-        if mime_type in _SUPPORTED_MIME_TYPES:
+        if mime_type in _EPUB_MIME_TYPES:
             return _SCORE
+
+        # ``application/zip`` needs a second opinion.  Detection is performed
+        # by libmagic, which classifies a ZIP by its first bytes alone and
+        # therefore reports ``application/zip`` for any EPUB whose ``mimetype``
+        # entry is not the first thing in the archive -- which the OCF
+        # specification requires but many real-world files violate.  Such a
+        # book is a perfectly readable EPUB that Paperless would otherwise
+        # reject with "Unsupported mime type application/zip" before any
+        # parser is consulted.
+        #
+        # Note the ordering constraint in ``ParserRegistry.get_parser_for_file``:
+        # a parser whose ``supported_mime_types`` omits the detected type is
+        # skipped outright, so ``score`` is never reached.  Inspecting the
+        # archive here is therefore only possible by claiming the type first
+        # and declining it below -- the low score keeps us out of the way of
+        # any parser that genuinely handles ZIP files.
+        if mime_type in _ZIP_MIME_TYPES and path is not None:
+            if _looks_like_epub(path):
+                return _ZIP_ALIAS_SCORE
+
         return None
 
     # -- Capability flags -------------------------------------------------
