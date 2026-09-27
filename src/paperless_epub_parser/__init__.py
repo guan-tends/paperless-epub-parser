@@ -364,6 +364,13 @@ class EpubDocumentParser:
 def _extract_epub(path: Path) -> tuple[str, str | None]:
     """Convert an EPUB to Markdown text.
 
+    Delegates to ``markitdown``'s ``EpubConverter``, which handles the format
+    correctly for the overwhelming majority of books.  Before doing so it
+    checks for the one known condition where that converter silently fails --
+    a namespace-prefixed OPF, which defeats its qualified-name spine lookup --
+    and takes the local spine-walking path instead.  See ``_epub.py`` for the
+    full analysis.
+
     Isolated so the test suite can substitute a stub without importing
     ``markitdown``.
 
@@ -384,6 +391,12 @@ def _extract_epub(path: Path) -> tuple[str, str | None]:
     # class introspectable by the registry -- even if the optional converter
     # is missing.
     from markitdown import MarkItDown
+
+    from ._epub import extract_text_via_spine
+    from ._epub import spine_lookup_is_defeated
+
+    if spine_lookup_is_defeated(path):
+        return extract_text_via_spine(path)
 
     converter = MarkItDown()
     result = converter.convert(str(path))
