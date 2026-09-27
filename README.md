@@ -29,9 +29,7 @@ derived image instead:
 ```dockerfile
 FROM ghcr.io/paperless-ngx/paperless-ngx:3.1.3
 
-USER root
-RUN pip install --no-cache-dir /path/to/paperless-epub-parser
-USER paperless
+RUN pip install --no-cache-dir paperless-epub-parser
 ```
 
 Then point the `webserver` service at it:
@@ -43,6 +41,9 @@ services:
     # ... rest of your existing service definition
 ```
 
+⚠️ **Do not add a `USER` instruction to this Dockerfile.** It is the obvious
+thing to write and it will break your instance. See "The `USER` trap" below.
+
 ⚠️ **Pin the base image tag.** The upstream `latest` tag moves; a rebuild months
 later would silently install the plugin into a different Paperless version than
 the one you tested against.
@@ -50,8 +51,38 @@ the one you tested against.
 Verify discovery in the startup log:
 
 ```
-Loaded third-party parser 'EPUB' v1.0.0 by David Newman (entrypoint: 'epub').
+Loaded third-party parser 'EPUB' v1.1.0 by David Newman (entrypoint: 'epub').
 ```
+
+## The `USER` trap
+
+If you write the natural-looking Dockerfile — `USER root`, install, `USER
+paperless` — **the container will not start.** It exits cleanly, forever:
+
+```
+Restarts=3, climbing · ExitCode=0 · no error output
+```
+
+That signature is the confusing kind. A clean exit with no message reads like
+"nothing to do", not "broken", so it is easy to spend a while looking in the
+wrong place.
+
+The cause: the official image declares **no `USER` at all**.
+
+```bash
+docker inspect ghcr.io/paperless-ngx/paperless-ngx:3.1.3 --format '{{.Config.User}}'
+# -> (empty)
+```
+
+It runs `/init` (s6-overlay) **as root** and drops privileges *internally*, to
+the uid/gid given by `USERMAP_UID` / `USERMAP_GID`. Setting `USER paperless`
+yourself pre-empts that handoff, and init exits.
+
+**So: install your package and stop.** Add no `USER` line; the base image owns
+privilege dropping.
+
+If you already have a crashing instance: `Restarts` climbing, `ExitCode=0`, no
+errors — remove the `USER` instruction and rebuild.
 
 ## Design decisions
 
@@ -112,6 +143,46 @@ rerouted. Only the spine walk is replaced — each document is still converted b
 Measured on the affected book: **203 → 157,367 characters**, with all other
 books byte-identical.
 
+## Non-conformant EPUBs detected as `application/zip`
+
+Some EPUBs are rejected by Paperless before this — or any — parser is consulted:
+
+```
+ConsumerError: book.epub: Unsupported mime type application/zip
+```
+
+The book is fine. Its *container* is not. The OCF specification requires a
+`mimetype` entry as the **first record** in the archive, stored uncompressed, so
+that a reader can identify the format from the opening bytes. Plenty of real
+files violate this — some list a directory entry first, some put `mimetype`
+third.
+
+Typesetting it correctly matters because Paperless identifies files with
+`libmagic`, which reads the leading bytes and reports `application/zip` for a
+misordered archive. The consumer then asks the parser registry for a handler for
+`application/zip`, and — note the ordering — **a parser whose declared MIME types
+omit the detected type is skipped outright, so its `score()` is never called.**
+
+That ordering is why this plugin declares `application/zip` at all. It is not a
+claim to handle ZIP files; it is the only way to be *offered* the file. The claim
+is then gated inside `score()`, which opens the archive and requires **both**
+structural markers together:
+
+- a `META-INF/container.xml` entry, and
+- a `mimetype` entry whose content is exactly `application/epub+zip`.
+
+The `mimetype` entry's *position* is deliberately ignored, since position is
+precisely the thing that varies.
+
+Because `application/zip` is a busy type, the claim is scored **1**, not 10 — an
+archive must never out-rank a parser that genuinely handles whatever the file is.
+An ODT, for instance, also carries a `mimetype` entry; only its value differs,
+and it is declined. docx, xlsx, jar, apk and plain zip are all declined.
+
+If your archive does not need ZIP files handled by anything else, this is
+transparent. If you run a plugin that legitimately handles ZIP archives, it will
+out-score this one and win.
+
 ## Failure behaviour
 
 - **Malformed / unreadable file** → `ParseError` naming the file, so Paperless
@@ -164,6 +235,19 @@ cp book.epub /path/to/paperless/consume/
   plugin targets the `ParserProtocol` interface as it exists in 3.1.3).
 - Python **3.11+** (the image ships 3.14; `markitdown` supports 3.10–3.14).
 
+## Reporting problems
+
+Please include the book that misbehaved, or at least:
+
+- the exact error from `docker compose logs webserver`
+- the output of `file yourbook.epub`
+- the first few entries of `unzip -l yourbook.epub`
+
+Those three lines distinguish "the container is non-conformant" from "the text
+extraction failed", which are different problems with different fixes.
+
 ## Licence
 
-MIT — David Newman <david.r.newman@proton.me>
+MIT — see [LICENSE](LICENSE).
+
+Copyright (c) 2026 David Newman and Guan.
