@@ -10,12 +10,30 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "David Newman", email = "david.r.newman@proton.me" }]
-keywords = ["paperless-ngx", "epub", "parser", "plugin", "ocr"]
+keywords = ["paperless-ngx", "epub", "parser", "plugin"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Utilities",
+]
 
-# ``markitdown`` is the EPUB converter.  ``Pillow`` renders the thumbnail --
-# it is already present in the Paperless-ngx image (the built-in text parser
-# imports it), but a package should declare what it imports rather than
-# depending on a transitive host dependency.
+# ``markitdown`` converts the EPUB.  ``Pillow`` renders the thumbnail -- it is
+# already present in the Paperless-ngx image (the built-in text parser imports
+# it), but a package should declare what it imports rather than depend on a
+# transitive host dependency.
+#
+# EPUB conversion lives in markitdown's BASE install: EpubConverter subclasses
+# HtmlConverter and needs only beautifulsoup4, which is a core requirement.
+# There is no ``[epub]`` extra and none is needed, so the PDF/DOCX/PPTX/XLSX
+# extras are deliberately NOT pulled in -- Paperless handles those formats with
+# its own built-in parsers.
 dependencies = [
     "markitdown>=0.1.5",
     "Pillow>=10.0",
@@ -23,6 +41,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
+
+[project.urls]
+Homepage = "https://github.com/guan-tends/paperless-epub-parser"
+Issues = "https://github.com/guan-tends/paperless-epub-parser/issues"
 
 # Paperless-ngx discovers third-party parsers by scanning this entry-point
 # group at startup (paperless/parsers/registry.py).  The key on the left is

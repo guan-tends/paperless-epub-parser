@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is the floor we declare; 3.12 is what most users run; 3.14 is
+        # what the Paperless-ngx image currently ships.
+        python-version: ["3.11", "3.12", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Test
+        run: pytest -v
+
+      - name: Build distribution
+        run: |
+          pip install build
+          python -m build
+
+      - name: Verify the built wheel carries the parser entry point
+        # The package is only useful if the entry point survives packaging.
+        # Testing the tree is not the same as testing the artifact.
+        run: |
+          python - <<'PY'
+          import glob, zipfile, sys
+
+          wheels = glob.glob("dist/*.whl")
+          if not wheels:
+              sys.exit("no wheel produced")
+
+          with zipfile.ZipFile(wheels[0]) as z:
+              names = z.namelist()
+              eps = [n for n in names if n.endswith("entry_points.txt")]
+              if not eps:
+                  sys.exit("wheel has no entry_points.txt")
+              body = z.read(eps[0]).decode()
+              if "paperless_ngx.parsers" not in body:
+                  sys.exit("entry point group missing from wheel")
+              if not any(n.endswith("paperless_epub_parser/_epub.py") for n in names):
+                  sys.exit("_epub.py missing from wheel")
+
+          print("wheel carries the parser entry point and both modules")
+          PY
