@@ -251,3 +251,7 @@ extraction failed", which are different problems with different fixes.
 MIT — see [LICENSE](LICENSE).
 
 Copyright (c) 2026 David Newman and Guan.
+
+---
+
+Crafted with ❤️ by [Sage Labs](https://sagelabs.dev)
